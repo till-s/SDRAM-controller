@@ -28,7 +28,9 @@ entity SDRAMCtrl is
       -- bank-address width
       B_WIDTH_G              : natural := 2;
       -- column-address width
-      C_WIDTH_G              : natural := 8
+      C_WIDTH_G              : natural := 8;
+      -- use external IO registers for output
+      EXT_OUT_REG_G          : boolean := false
    );
    port (
       clk                    : in  std_logic;
@@ -198,16 +200,20 @@ architecture rtl of SDRAMCtrl is
    signal rin          : RegType;
 
    signal sdram        : SDRAMOutType;
-   signal dqInpLoc     : std_logic_vector(sdramDQInp'range);
 
 begin
 
    assert T_RAS_MAX_G > T_REF_G / 2.0**real( A_WIDTH_G ) report "T_RAS_MAX < refresh period unsupported" severity failure;
 
-   sdram               <= r.sdram;
-   dqInpLoc            <= sdramDQInp;
+   G_EXT_OUT_REG : if ( EXT_OUT_REG_G ) generate
+      sdram            <= rin.sdram;
+   end generate G_EXT_OUT_REG;
 
-   P_COMB : process ( r, req, rdnwr, addr, wdat, wstrb, dqInpLoc ) is
+   G_LOC_OUT_REG : if ( not EXT_OUT_REG_G ) generate
+      sdram            <= r.sdram;
+   end generate G_LOC_OUT_REG;
+
+   P_COMB : process ( r, req, rdnwr, addr, wdat, wstrb ) is
       variable v : RegType;
    begin
       v          := r;
@@ -363,4 +369,6 @@ begin
    sdramDQM            <= sdram.dqm;
    rdat                <= sdramDQInp;
    vld                 <= r.rdLat(0);
+   rdat                <= sdramDQInp;
+
 end architecture rtl;
