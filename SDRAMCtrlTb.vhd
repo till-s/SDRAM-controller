@@ -26,7 +26,7 @@ begin
    process is
    begin
       if not run then wait; end if;
-      wait for 3 ns; clk <= not clk;
+      wait for 1000.0 ns / 166.0 / 2.0; clk <= not clk;
    end process;
 
    process is

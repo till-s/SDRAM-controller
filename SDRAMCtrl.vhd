@@ -19,6 +19,10 @@ entity SDRAMCtrl is
       T_RAS_MAX_G            : real    := 100.0E-6;
       -- active to read/write
       T_RCD_G                : real    := 15.0E-9;
+      -- initial pause
+      T_INIT_G               : real    := 200.0E-6;
+      -- number of initial auto-refresh cycles required
+      N_INIT_REFRESH_G       : natural := 8;
       CAS_LAT_G              : natural := 3; -- cycles
       -- write-recovery
       WR_LAT_G               : natural := 2; -- cycles
@@ -61,7 +65,7 @@ entity SDRAMCtrl is
 end entity SDRAMCtrl;
 
 architecture rtl of SDRAMCtrl is
-   type StateType is (INIT, IDLE, ACTIVATE, PRECHARGE, ACTIVE, AUTOREF);
+   type StateType is (INIT, INIT_REFRESH, IDLE, ACTIVATE, PRECHARGE, ACTIVE, AUTOREF);
 
    -- RASb-CASb-WEb
    subtype CmdType is std_logic_vector(2 downto 0);
@@ -72,6 +76,20 @@ architecture rtl of SDRAMCtrl is
    constant CMD_READ_C           : CmdType := "101";
    constant CMD_PRECHARGE_C      : CmdType := "010";
    constant CMD_SET_MODE_C       : CmdType := "000";
+   constant     MODE_BURST_1_C   : std_logic_vector(2 downto 0) := "000";
+   constant     MODE_ASEQ_C      : std_logic_vector(3 downto 3) := "0";
+   constant     MODE_CAS_LAT_C   : std_logic_vector(6 downto 4) := std_logic_vector( to_unsigned( CAS_LAT_G, 3 ) );
+   constant     MODE_TST_NRM_C   : std_logic_vector(8 downto 7) := "00";
+   constant     MODE_WBRST_C     : std_logic_vector(9 downto 9) := "0";
+   constant     MODE_RSRVD_C     : std_logic_vector(A_WIDTH_G - 1 downto 10) := (others => '0');
+   constant     MODE_ADDR_C      : std_logic_vector(sdramAddr'range) := 
+                                      MODE_RSRVD_C     &
+                                      MODE_WBRST_C     &
+                                      MODE_TST_NRM_C   &
+                                      MODE_CAS_LAT_C   &
+                                      MODE_ASEQ_C      &
+                                      MODE_BURST_1_C;
+   constant     MODE_BANK_C      : std_logic_vector(sdramBank'range) := (others => '0');
    constant CMD_REFRESH_C        : CmdType := "001";
 
    function clicks(constant t : in real)
@@ -104,9 +122,15 @@ architecture rtl of SDRAMCtrl is
       -- extend by sign bit
       variable v : signed( nbits(x - 1) downto 0 );
    begin
-      timerInit( v, x - 1 );
+      timerInit( v, x );
       return v;
    end function timerInit;
+
+   function timerValue(constant x : signed)
+   return integer is
+   begin   
+      return to_integer( x + 1 );
+   end function timerValue;
 
    function max(constant a, b: in integer)
    return integer is
@@ -137,8 +161,11 @@ architecture rtl of SDRAMCtrl is
    constant C_RFC_C              : integer := clicks( T_RFC_G );
    constant C_RAS_C              : integer := clicks( T_RAS_MIN_G );
    constant C_RCD_C              : integer := clicks( T_RCD_G );
+   constant C_SET_MODE_C         : integer := 1;
 
    constant T_REFRESH_C          : signed := timerInit( clicks( T_REF_G/(2.0**real(A_WIDTH_G)) ) - C_RFC_C - C_RP_C );
+   -- full period is timerValue( T_REFRESH_C ) + 1 cycles
+   constant T_INIT_C             : signed := timerInit( clicks( T_INIT_G / real( timerValue( T_REFRESH_C ) + 1 ) ) );
 
    type SDRAMOutType is record
       dq                         : std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
@@ -156,10 +183,10 @@ architecture rtl of SDRAMCtrl is
       oe                         => '0',
       addr                       => (others => '0'),
       bank                       => (others => '0'),
-      csb                        => '0',
+      csb                        => '1',
       cmd                        => CMD_NOP_C,
       cke                        => '1',
-      dqm                        => (others => '0')
+      dqm                        => (others => '1')
    );
 
    -- read latency increased by 1 due to our pipeline (output register);
@@ -179,6 +206,7 @@ architecture rtl of SDRAMCtrl is
       bnk              : std_logic_vector(B_WIDTH_G  - 1 downto 0);
       lstBnk           : std_logic_vector(B_WIDTH_G  - 1 downto 0);
       refTimer         : signed( T_REFRESH_C'range );
+      iniTimer         : signed( T_INIT_C'range );
       timer            : signed( nbits(C_RAS_C) downto 0 );
       rdLat            : RdLatType;
       wrLat            : WrLatType;
@@ -191,7 +219,8 @@ architecture rtl of SDRAMCtrl is
       row              => (others => '0'),
       bnk              => (others => '0'),
       lstBnk           => (others => '0'),
-      refTimer         => (others => '1'),
+      refTimer         => T_REFRESH_C,
+      iniTimer         => T_INIT_C,
       timer            => (others => '1'),
       rdLat            => (others => '0'),
       wrLat            => (others => '0'),
@@ -239,7 +268,44 @@ begin
       case ( r.state ) is
 
          when INIT =>
-            v.state := IDLE;
+            v.sdram.dqm := (others => '1');
+            if ( r.iniTimer >= 0 ) then
+               -- wait for the initialization period to expire
+               if ( r.refTimer < 0 ) then
+                  v.refTimer := T_REFRESH_C;
+                  v.iniTimer := r.iniTimer - 1;
+               end if;
+            else
+               -- precharge all banks
+               v.sdram.csb      := '0';
+               v.sdram.addr(10) := '1';
+               if ( r.sdram.csb = '1' ) then
+                  v.sdram.cmd   := CMD_PRECHARGE_C;
+                  timerInit( v.timer, C_RP_C );
+               elsif ( r.timer < 0 ) then
+                  v.state       := INIT_REFRESH;
+                  v.sdram.cmd   := CMD_SET_MODE_C;
+                  v.sdram.addr  := MODE_ADDR_C;
+                  v.sdram.bank  := MODE_BANK_C;
+                  -- use refresh timer to delay the first refresh until MODE required delay
+                  timerInit( v.refTimer, C_SET_MODE_C );
+                  -- use the iniTimer to count refresh cycles
+                  timerInit( v.iniTimer, N_INIT_REFRESH_G );
+               end if;
+            end if;
+
+         when INIT_REFRESH =>
+            -- initial refresh cycles
+            if ( r.refTimer < 0 ) then
+               if ( r.iniTimer < 0 ) then
+                  v.state    := IDLE;
+                  v.refTimer := T_REFRESH_C;
+               else
+                  v.iniTimer  := r.iniTimer - 1;
+                  v.sdram.cmd := CMD_REFRESH_C;
+                  timerInit( v.refTimer, C_RFC_C - 1 );
+               end if;
+            end if;
 
          when IDLE =>
             if ( r.refTimer < 0 ) then
@@ -271,8 +337,8 @@ begin
                end if;
             else
                if ( r.timer < 0 ) then
-                  -- set timer to remaining time; 1 cycle spent in ACTIVE until precharge
-                  timerInit( v.timer, C_RAS_C - C_RCD_C - 1 );
+                  -- set timer to remaining time
+                  timerInit( v.timer, C_RAS_C - C_RCD_C );
                   v.state := ACTIVE;
                end if;
             end if;
@@ -330,7 +396,9 @@ begin
                else
                   -- bank switch
                   if ( r.timer < 0 ) then
-                     -- C_RAS_C has expired (assume  T_RRD < T_RAS_MIN )
+                     -- C_RAS_C has expired (assume  T_RRD < T_RAS_MIN ); we wait for C_RAS_C
+                     -- because we are going to preload this bank immediately after activating
+                     -- the new one
                      v.sdram.cmd  := CMD_ACTIVATE_C;
                      v.row        := row( addr );
                      v.sdram.addr := row( addr );
@@ -346,7 +414,8 @@ begin
          when AUTOREF =>
             if ( r.refTimer < 0 ) then
                v.state    := IDLE;
-               -- restart autorefresh period
+               -- restart autorefresh period; note that the constant has already been decremented
+               -- by 1 so *dont* use the 'timerInit' function.
                v.refTimer := T_REFRESH_C;
             end if;
       end case;
