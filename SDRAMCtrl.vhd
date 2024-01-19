@@ -163,9 +163,9 @@ architecture rtl of SDRAMCtrl is
    );
 
    -- read latency increased by 1 due to our pipeline (output register);
-   subtype RdLatType       is std_logic_vector(CAS_LAT_G    downto 0);
+   subtype RdLatType       is std_logic_vector(CAS_LAT_G - 1 downto 0);
    -- time write -> precharge; since there is a 1 cycle delay in our pipeline we subtract one
-   subtype WrLatType       is std_logic_vector(WR_LAT_G - 2 downto 0);
+   subtype WrLatType       is std_logic_vector(WR_LAT_G  - 2 downto 0);
 
 
    constant RDPIPE_EMPTY_C : RdLatType := (others => '0');
@@ -182,6 +182,7 @@ architecture rtl of SDRAMCtrl is
       timer            : signed( nbits(C_RAS_C) downto 0 );
       rdLat            : RdLatType;
       wrLat            : WrLatType;
+      vld              : std_logic;
    end record RegType;
 
    constant REG_INIT_C : RegType := (
@@ -193,7 +194,8 @@ architecture rtl of SDRAMCtrl is
       refTimer         => (others => '1'),
       timer            => (others => '1'),
       rdLat            => (others => '0'),
-      wrLat            => (others => '0')
+      wrLat            => (others => '0'),
+      vld              => '0'
    );
 
    signal r            : RegType := REG_INIT_C;
@@ -232,6 +234,7 @@ begin
       v.sdram.dqm := (others => '0');
       v.rdLat     := '0' & r.rdLat(r.rdLat'left downto 1);
       v.wrLat     := '0' & r.wrLat(r.wrLat'left downto 1);
+      v.vld       := r.rdLat(0);
 
       case ( r.state ) is
 
@@ -299,6 +302,8 @@ begin
                      v.sdram.bank  := bnk( addr );
                      if ( rdnwr = '0' ) then
                          -- WRITE
+                         -- note: during this cycle is is OK if VLD is asserted;
+                         -- the bus is only turned during the next cycle...
                          if ( r.rdLat = RDPIPE_EMPTY_C ) then
                             v.sdram.dqm             := not wstrb;
                             v.sdram.oe              := '1';
@@ -368,7 +373,6 @@ begin
    sdramCKE            <= sdram.cke;
    sdramDQM            <= sdram.dqm;
    rdat                <= sdramDQInp;
-   vld                 <= r.rdLat(0);
-   rdat                <= sdramDQInp;
+   vld                 <= r.vld;
 
 end architecture rtl;
