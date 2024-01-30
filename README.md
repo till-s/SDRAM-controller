@@ -103,6 +103,14 @@ Note that the read-data is *not* registered in the
 controller since this is easy to add externally and
 not required by the controller itself.
 
+## Additional Pipeline Stage
+
+When setting the generic `INP_REG_G => true` then a pipeline
+stage is added to the bus interface which decouples several
+address comparisons from the bus-interface ports. This
+may be beneficial for timing closure but adds one clock cycle
+of latency. The max. throughput is not affected.
+
 ## License
 
 The SDRAM controller is released under the [European-Union Public

@@ -33,13 +33,14 @@ entity SDRAMCtrl is
       WR_LAT_G               : natural := 2; -- cycles
       DQ_BYTES_G             : natural := 2;
       -- row-address width
-      A_WIDTH_G              : natural := 13;
+      A_WIDTH_G              : natural := 12;
       -- bank-address width
       B_WIDTH_G              : natural := 2;
       -- column-address width
       C_WIDTH_G              : natural := 8;
       -- use external IO registers for output
-      EXT_OUT_REG_G          : boolean := false
+      EXT_OUT_REG_G          : boolean := false;
+      INP_REG_G              : boolean := false
    );
    port (
       clk                    : in  std_logic;
@@ -54,6 +55,8 @@ entity SDRAMCtrl is
       -- pipelined read-back qualified by 'vld'
       rdat                   : out std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
       vld                    : out std_logic;
+      -- initialization done
+      rdy                    : out std_logic;
       -- SDRAM interface
       sdramDQInp             : in  std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
       sdramDQOut             : out std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
@@ -216,6 +219,7 @@ architecture rtl of SDRAMCtrl is
       rdLat            : RdLatType;
       wrLat            : WrLatType;
       vld              : std_logic;
+      rdy              : std_logic;
    end record RegType;
 
    constant REG_INIT_C : RegType := (
@@ -229,8 +233,33 @@ architecture rtl of SDRAMCtrl is
       timer            => (others => '1'),
       rdLat            => (others => '0'),
       wrLat            => (others => '0'),
-      vld              => '0'
+      vld              => '0',
+      rdy              => '0'
    );
+
+   type ReqType is record
+      req              : std_logic;
+      rdnwr            : std_logic;
+      addr             : std_logic_vector(A_WIDTH_G + B_WIDTH_G + C_WIDTH_G - 1 downto 0);
+      wdat             : std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
+      wstrb            : std_logic_vector(  DQ_BYTES_G - 1 downto 0);
+      sameBank         : boolean;
+      sameRow          : boolean;
+   end record ReqType;
+
+   constant REQ_INIT_C : ReqType := (
+      req              => '0',
+      rdnwr            => '0',
+      addr             => (others => '0'),
+      wdat             => (others => '0'),
+      wstrb            => (others => '0'),
+      sameBank         => false,
+      sameRow          => false
+   );
+
+   signal usrReq       : ReqType;
+   signal locReq       : ReqType;
+   signal locAck       : std_logic;
 
    signal r            : RegType := REG_INIT_C;
    signal rin          : RegType;
@@ -249,7 +278,62 @@ begin
       sdram            <= r.sdram;
    end generate G_LOC_OUT_REG;
 
-   P_COMB : process ( r, req, rdnwr, addr, wdat, wstrb ) is
+   G_NO_IN_STAGE : if ( not INP_REG_G ) generate
+      locReq       <= usrReq;
+      ack          <= locAck;
+   end generate G_NO_IN_STAGE;
+
+   G_IN_STAGE    : if ( INP_REG_G ) generate
+      signal rInp    : ReqType := REQ_INIT_C;
+      signal rinInp  : ReqType;
+   begin
+
+      P_IN_COMB : process ( usrReq, locAck ) is
+         variable v : ReqType;
+      begin
+         v      := rInp;
+         ack    <= '0';
+
+         if ( (v.req and locAck) = '1' ) then
+            v.req := '0';
+         end if;
+
+         if ( r.state = ACTIVATE ) then
+            -- new bank/row is being activated;
+            v.sameBank := true;
+            v.sameRow  := true;
+         end if;
+
+         if ( (usrReq.req and not v.req) = '1' ) then 
+            v   := usrReq;
+            ack <= '1';
+         end if;
+
+         rinInp <= v;
+      end process P_IN_COMB;
+
+      P_IN_SEQ : process ( clk ) is
+      begin
+         if ( rising_edge( clk ) ) then
+            rInp <= rinInp;
+         end if;
+      end process P_IN_SEQ;
+
+      locReq <= rInp;
+ 
+   end generate G_IN_STAGE;
+
+   usrReq.req   <= req;
+   usrReq.rdnwr <= rdnwr;
+   usrReq.addr  <= addr;
+   usrReq.wdat  <= wdat;
+   usrReq.wstrb <= wstrb;
+
+
+   usrReq.sameBank <= ( bnk(usrReq.addr) = r.bnk );
+   usrReq.sameRow  <= ( row(usrReq.addr) = r.row );
+
+   P_COMB : process ( r, locReq ) is
       variable v : RegType;
    begin
       v          := r;
@@ -261,7 +345,7 @@ begin
          v.timer    := r.timer - 1;
       end if;
 
-      ack         <= '0';
+      locAck      <= '0';
 
       v.sdram.cmd := CMD_NOP_C;
       v.sdram.oe  := '0';
@@ -313,19 +397,20 @@ begin
             end if;
 
          when IDLE =>
+            v.rdy := '1'; -- initialization done
             if ( r.refTimer < 0 ) then
                v.sdram.cmd := CMD_REFRESH_C;
                -- 1 cycle is spent in IDLE at least; subtract
                timerInit( v.refTimer, C_RFC_C - 1 ); 
                v.state     := AUTOREF;
-            elsif ( req = '1' ) then
+            elsif ( locReq.req = '1' ) then
                -- new request; must activate
                v.sdram.cmd  := CMD_ACTIVATE_C;
-               v.row        := row( addr );
-               v.sdram.addr := row( addr );
-               v.bnk        := bnk( addr );
-               v.sdram.bank := bnk( addr );
-               v.lstBnk     := bnk( addr );
+               v.row        := row( locReq.addr );
+               v.sdram.addr := row( locReq.addr );
+               v.bnk        := bnk( locReq.addr );
+               v.sdram.bank := bnk( locReq.addr );
+               v.lstBnk     := bnk( locReq.addr );
                -- 1 cycle spent in ACTIVATE and another one in ACTIVE until read/write CMD is issued
                timerInit( v.timer, C_RCD_C - 2 );
                v.state      := ACTIVATE;
@@ -363,30 +448,30 @@ begin
                   -- 1 cycle spent in IDLE until refresh is issued
                   timerInit( v.timer, C_RP_C - 1 );
                end if;
-            elsif ( req = '1' ) then
-               if ( bnk( addr ) = r.bnk ) then
-                  if ( row( addr ) = r.row ) then
+            elsif ( locReq.req = '1' ) then
+               if ( locReq.sameBank ) then
+                  if ( locReq.sameRow ) then
                      -- *hit* we have the bank available
                      v.sdram.addr  := (others => '0');
-                     v.sdram.addr( C_WIDTH_G - 1 downto 0) := col( addr );
-                     v.sdram.dq    := wdat;
-                     v.sdram.bank  := bnk( addr );
-                     if ( rdnwr = '0' ) then
+                     v.sdram.addr( C_WIDTH_G - 1 downto 0) := col( locReq.addr );
+                     v.sdram.dq    := locReq.wdat;
+                     v.sdram.bank  := bnk( locReq.addr );
+                     if ( locReq.rdnwr = '0' ) then
                          -- WRITE
                          -- note: during this cycle is is OK if VLD is asserted;
                          -- the bus is only turned during the next cycle...
                          if ( r.rdLat = RDPIPE_EMPTY_C ) then
-                            v.sdram.dqm             := not wstrb;
+                            v.sdram.dqm             := not locReq.wstrb;
                             v.sdram.oe              := '1';
                             v.wrLat( v.wrLat'left ) := '1';
                             v.sdram.cmd             := CMD_WRITE_C;
-                            ack                     <= '1';
+                            locAck                  <= '1';
                          end if;
                      else
                          -- READ
                          v.rdLat( v.rdLat'left ) := '1';
                          v.sdram.cmd             := CMD_READ_C;
-                         ack                     <= '1';
+                         locAck                  <= '1';
                      end if;
                   else
                      -- row switch within the same bank; wait for C_RAS_C to expire, precharge and go through idle
@@ -405,10 +490,10 @@ begin
                      -- because we are going to preload this bank immediately after activating
                      -- the new one
                      v.sdram.cmd  := CMD_ACTIVATE_C;
-                     v.row        := row( addr );
-                     v.sdram.addr := row( addr );
-                     v.bnk        := bnk( addr );
-                     v.sdram.bank := bnk( addr );
+                     v.row        := row( locReq.addr );
+                     v.sdram.addr := row( locReq.addr );
+                     v.bnk        := bnk( locReq.addr );
+                     v.sdram.bank := bnk( locReq.addr );
                      -- 1 cycle spent in ACTIVATE and another one in ACTIVE until read/write CMD is issued
                      timerInit( v.timer, C_RCD_C - 2 );
                      v.state      := ACTIVATE;
@@ -448,5 +533,6 @@ begin
    sdramDQM            <= sdram.dqm;
    rdat                <= sdramDQInp;
    vld                 <= r.vld;
+   rdy                 <= r.rdy;
 
 end architecture rtl;
