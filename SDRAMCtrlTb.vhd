@@ -20,6 +20,17 @@ architecture sim of SDRAMCtrlTb is
    signal run  : boolean   := true;
    signal rnw  : std_logic := '0';
    signal vld  : std_logic;
+   signal rdy  : std_logic;
+
+   signal ramDQOut: std_logic_vector(15 downto 0);
+   signal ramDQOE : std_logic;
+   signal ramAddr : std_logic_vector(12 downto 0);
+   signal ramBank : std_logic_vector( 1 downto 0);
+   signal ramCSb  : std_logic;
+   signal ramRASb : std_logic;
+   signal ramCASb : std_logic;
+   signal ramWEb  : std_logic;
+   signal sdramDQM: std_logic_vector( 1 downto 0);
 
    procedure tick is
    begin
@@ -35,16 +46,23 @@ begin
    end process;
 
    process is
+      variable timo : integer;
    begin
       tick;
+      while ( rdy = '0' ) loop
+         tick;
+      end loop;
       req <= '1';
       rnw <= '0';
       for i in 254 to 257 loop
          adr  <= to_unsigned(i, adr'length);
          wdat <= std_logic_vector(to_unsigned(i-254, wdat'length));
          tick;
+         timo := 0;
          while ack = '0' loop
             tick;
+            timo := timo + 1;
+            assert timo < 100 report "no ACK" severity failure;
          end loop;
       end loop;
       adr <= to_unsigned( 256 + 1024, adr'length );
@@ -66,12 +84,39 @@ begin
          tick;
       end loop;
       tick;
+      -- switching rows...
+      adr  <= "0" & x"abc" & "00" & x"00";
+      req  <= '1';
+      wdat <= x"dead";
+      while ack = '0' loop
+         tick;
+      end loop;
+
+      adr  <= "0" & x"abd" & "00" & x"00";
+      req  <= '1';
+      wdat <= x"beef";
+      while ack = '0' loop
+         tick;
+      end loop;
  
+      adr  <= "0" & x"abe" & "00" & x"00";
+      req  <= '1';
+      wdat <= x"affe";
+      while ack = '0' loop
+         tick;
+      end loop;
+      req <= '0';
+      tick;
+  
       run <= false;      
       wait;
    end process;
 
    U_DUT : entity work.SDRAMCtrl
+      generic map (
+         A_WIDTH_G  => 13,
+         INP_REG_G  => 2
+      )
       port map (
          clk        => clk,
          req        => req,
@@ -80,7 +125,36 @@ begin
          rdnwr      => rnw,
          ack        => ack,
          vld        => vld,
-         sdramDQInp => x"0000"
+         rdy        => rdy,
+         sdramDQInp => x"0000",
+         sdramDQOut => ramDQOut,
+         sdramDQOE  => ramDQOE,
+         sdramAddr  => ramAddr,
+         sdramBank  => ramBank,
+         sdramCSb   => ramCSb,
+         sdramRASb  => ramRASb,
+         sdramCASb  => ramCASb,
+         sdramWEb   => ramWEb,
+         sdramDQM   => sdramDQM
       );
+
+   P_REP : process ( clk ) is
+      function toStr(constant x : std_logic_vector)
+      return string is
+      begin
+         return integer'image( to_integer( unsigned( x ) ) );
+      end function toStr;
+
+      function toStr(constant x : std_logic)
+      return string is
+      begin
+         return std_logic'image( x );
+      end function toStr;
+
+   begin
+      if ( rising_edge( clk ) ) then
+         report toStr(ramDQOE) & toStr(ramRASb) & toStr(ramCASb) & toStr(ramWEb) & " " & toStr(ramBank) & " " & toStr(ramAddr) & " " & toStr(ramDQOut) ;
+      end if;
+   end process P_REP;
 
 end architecture sim;

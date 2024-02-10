@@ -33,14 +33,20 @@ entity SDRAMCtrl is
       WR_LAT_G               : natural := 2; -- cycles
       DQ_BYTES_G             : natural := 2;
       -- row-address width
-      A_WIDTH_G              : natural := 12;
+      A_WIDTH_G              : natural := 13;
       -- bank-address width
       B_WIDTH_G              : natural := 2;
       -- column-address width
       C_WIDTH_G              : natural := 8;
       -- use external IO registers for output
       EXT_OUT_REG_G          : boolean := false;
-      INP_REG_G              : boolean := false
+      -- add a pipeline stage to the bus interface
+      -- 0 -> no stage
+      -- 1 -> register captures input signals;
+      --      combinatial 'ack'
+      -- 2 -> added buffer registers for input signals;
+      --      registered 'ack'
+      INP_REG_G              : natural := 0
    );
    port (
       clk                    : in  std_logic;
@@ -272,63 +278,129 @@ begin
 
    G_EXT_OUT_REG : if ( EXT_OUT_REG_G ) generate
       sdram            <= rin.sdram;
+      vld              <= rin.vld;
    end generate G_EXT_OUT_REG;
 
    G_LOC_OUT_REG : if ( not EXT_OUT_REG_G ) generate
       sdram            <= r.sdram;
+      vld              <= r.vld;
    end generate G_LOC_OUT_REG;
 
-   G_NO_IN_STAGE : if ( not INP_REG_G ) generate
+   G_NO_INP_STAGE : if ( INP_REG_G = 0 ) generate
       locReq       <= usrReq;
       ack          <= locAck;
-   end generate G_NO_IN_STAGE;
+   end generate G_NO_INP_STAGE;
 
-   G_IN_STAGE    : if ( INP_REG_G ) generate
+   G_INP_STAGE    : if ( INP_REG_G > 0 ) generate
       signal rInp    : ReqType := REQ_INIT_C;
+      signal bInp    : ReqType := REQ_INIT_C;
       signal rinInp  : ReqType;
+      signal binInp  : ReqType;
    begin
 
-      P_IN_COMB : process ( usrReq, locAck ) is
-         variable v : ReqType;
-      begin
-         v      := rInp;
-         ack    <= '0';
+      G_INP_STG_1 : if ( INP_REG_G = 1 ) generate
 
-         if ( (v.req and locAck) = '1' ) then
-            v.req := '0';
-         end if;
+         P_IN_COMB : process ( rInp, r, usrReq, locAck ) is
+            variable v : ReqType;
+         begin
+            v      := rInp;
+            ack    <= '0';
+            locReq <= rInp;
 
-         if ( r.state = ACTIVATE ) then
-            -- new bank/row is being activated;
-            v.sameBank := true;
-            v.sameRow  := true;
-         end if;
+            if ( (v.req and locAck) = '1' ) then
+               v.req := '0';
+            end if;
 
-         if ( (usrReq.req and not v.req) = '1' ) then 
-            v   := usrReq;
-            ack <= '1';
-         end if;
+            if ( r.state = ACTIVATE ) then
+               -- new bank/row is being activated; the bank/row against which the
+               -- address (currently held in rInp) was compared is being opened,
+               -- i.e., the row in rInp *is* the 'current' row/bank
+               v.sameBank := true;
+               v.sameRow  := true;
+            end if;
 
-         rinInp <= v;
-      end process P_IN_COMB;
+            if ( (usrReq.req and not v.req) = '1' ) then 
+               v   := usrReq;
+               ack <= '1';
+            end if;
+
+            rinInp <= v;
+         end process P_IN_COMB;
+
+      end generate G_INP_STG_1;
+
+      G_INP_STG_2 : if ( INP_REG_G > 1 ) generate
+
+         P_IN_COMB : process ( rInp, bInp, r, usrReq, locAck ) is
+            variable v : ReqType;
+            variable b : ReqType;
+         begin
+            v      := rInp;
+            b      := bInp;
+
+            ack    <= not bInp.req;
+            locReq <= rInp;
+
+            if ( r.state = ACTIVATE ) then
+               -- new bank/row is being activated; the pre-computed comparison
+               -- of 'sameBank/sameRow' is no longer valid; in fact, the about
+               -- to be activated bank/row *is* the requesting bank/row
+               if ( bInp.req = '0' ) then
+                  -- easy case: the shadow register is empty; we can just update
+                  -- sameBank/sameRow
+                  v.sameBank := true;
+                  v.sameRow  := true;
+               else
+                  b.sameBank := true;
+                  b.sameRow  := true;
+                  -- if the shadow register is the current requestor we
+                  -- also must update the input register
+                  v.sameRow  := ( row( rInp.addr ) = row( bInp.addr ) );
+                  v.sameBank := ( bnk( rInp.addr ) = bnk( bInp.addr ) );
+               end if;
+            end if;
+
+            if ( bInp.req = '1' ) then
+               locReq <= bInp;
+               if ( locAck = '1' ) then
+                  b.req  := '0';
+               end if;
+            else
+               if ( rInp.req = '1' ) then
+                  -- bInp.req = '0' implies ack = '1'
+                  if ( locAck = '1' ) then
+                     v.req := '0';
+                  else
+                     -- cannot consume input; must store in bInp and turn off 'ack'
+                     b     := rInp;
+                     v.req := '0';
+                  end if;
+               end if;
+               -- input register is empty, 'ack' is '1'
+               v := usrReq;
+            end if;
+
+            rinInp <= v;
+            binInp <= b;
+         end process P_IN_COMB;
+
+      end generate G_INP_STG_2;
 
       P_IN_SEQ : process ( clk ) is
       begin
          if ( rising_edge( clk ) ) then
             rInp <= rinInp;
+            bInp <= binInp;
          end if;
       end process P_IN_SEQ;
 
-      locReq <= rInp;
- 
-   end generate G_IN_STAGE;
+   end generate G_INP_STAGE;
 
    usrReq.req   <= req;
    usrReq.rdnwr <= rdnwr;
    usrReq.addr  <= addr;
    usrReq.wdat  <= wdat;
    usrReq.wstrb <= wstrb;
-
 
    usrReq.sameBank <= ( bnk(usrReq.addr) = r.bnk );
    usrReq.sameRow  <= ( row(usrReq.addr) = r.row );
@@ -532,7 +604,6 @@ begin
    sdramCKE            <= sdram.cke;
    sdramDQM            <= sdram.dqm;
    rdat                <= sdramDQInp;
-   vld                 <= r.vld;
    rdy                 <= r.rdy;
 
 end architecture rtl;

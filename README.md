@@ -105,11 +105,16 @@ not required by the controller itself.
 
 ## Additional Pipeline Stage
 
-When setting the generic `INP_REG_G => true` then a pipeline
+When setting the generic `INP_REG_G => 1` then a pipeline
 stage is added to the bus interface which decouples several
 address comparisons from the bus-interface ports. This
 may be beneficial for timing closure but adds one clock cycle
-of latency. The max. throughput is not affected.
+of latency. The max. throughput is not affected. The generic
+may also be set to `2` in which case the `ack` signal is
+also registered eliminating more combinatorial paths.
+In this case all input signals must be internally double-
+buffered (doubling the number of registers used compared
+to `INP_REG_G => 1`).
 
 ## License
 
