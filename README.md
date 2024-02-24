@@ -52,7 +52,6 @@ impact):
      the new one to be opened (T_RCD) before read or
      write access is possible.
 
-
 When a auto-refresh interval expires then the currently
 active bank is precharged and a refresh cycle is executed.
 This takes precedence over any attempted access.
@@ -86,8 +85,10 @@ signals:
   `ack` is asserted by the controller when the access
    is accepted.
 
-   `val` is asserted by the controller when read data is
-   valid (`CAS_LAT_G` cycles after the corresponding
+   `vld` is asserted by the controller when read data is
+   valid (`CAS_LAT_G` plus additional cycles introduced
+   by pipeline and buffer registers -- see 'Additional
+   Pipeline Stages' -- after the corresponding
    `ack`).
 
 Note that once `req` is asserted the user must hold all signals 
@@ -103,7 +104,7 @@ Note that the read-data is *not* registered in the
 controller since this is easy to add externally and
 not required by the controller itself.
 
-## Additional Pipeline Stage
+## Additional Pipeline Stages
 
 When setting the generic `INP_REG_G => 1` then a pipeline
 stage is added to the bus interface which decouples several
@@ -115,6 +116,28 @@ also registered eliminating more combinatorial paths.
 In this case all input signals must be internally double-
 buffered (doubling the number of registers used compared
 to `INP_REG_G => 1`).
+
+## Clock Tuning
+
+In order to meet timing (of the FPGA as well as the SDRAM
+devices') it may be necessary to carefully tune the phase
+of the clock supplied to the SDRAM as well as the phase
+of the clock used to capture the read-data (an additional
+synchronization stage may be necessary to resynchronize
+these data into the controller's clock domain).
+
+Note that the details of these measures are outside of the
+scope of the controller itself. Any additional latency
+introduced by additional registers and phase-shifted clocks
+etc. must be accounted for and `vld` must be delayed
+accordingly. The controller delays `vld` to keep track of
+all delays internal to the controller but otherwise does
+not internally use `vld` itself nor the read-data.
+
+A `SDRAMClkTuner.vhd` module is provided which can be
+instantiated in a special design to determinen appropriate
+clock phases. Consult the comments in this file for
+additional information.
 
 ## License
 
