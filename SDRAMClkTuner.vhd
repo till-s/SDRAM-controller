@@ -6,7 +6,70 @@
 -- Module to help tuning the SDRAM clock phase
 -- (with respect to the FPGA internal clock).
 -- The optimal phase of the write- as well as the read
--- clock is tuned.
+-- clock can be tuned.
+
+-- The block first loops through the entire RAM writing
+-- a defined pattern and verifies by reading back. Each
+-- location is written using the following algorithm:
+--   1. Issue no-op command and all-zero write data during
+--      multiple cycles.
+--   2. Issue WRITE comand with non-zero write data during
+--      a *single* cycle.
+--   3. Issue no-op and all-zero write data during multiple
+--      cycles.
+--   4. Issue back-to-back read commands to the address
+--      just written. If any of the reads in not ACKed
+--      immediately (e.g., due to a refresh interrupting
+--      the read) then restart 4.
+--   5. Verify the read-back data against what just had
+--      been written ignoring the very first read-back
+--      value (as this may be bad due to ill-timed read
+--      clock).
+-- If the read-back operation fails for any of the written
+-- addresses then the tuner keeps looping through the entire
+-- address space using the algorithm described above. This
+-- allows inspection with the debugger.
+--
+-- If the entire address space was written successfully then
+-- the block starts looping through the address space with
+-- back-to-back read operations comparing the read-back value
+-- to the expected value (what had been written by the write test).
+-- The read test keeps going on indefinitely.
+--
+--   'wfail' is asserted for a single cycle each time the read-back
+--           value  (step 5. above) does not mach what just had been
+--           written.
+--   'rfail' is asserted for a single cycle during the read test each
+--           time the read-back value does not match what is expected
+--           at the associated read-address.
+--   'awrap' is toggled each time the address counter wraps around.
+--           I.e., the first toggle happens after the write-test
+--           succeeds and then each time the read test has scanned
+--           the entire address space. Can be hooked to a LED to
+--           indicate progress...
+--
+-- USE CASE:
+--
+--   a. drive the SDRAM clock with a phase-shifted (but synchronous
+--      to 'clk') clock and adjust the phase so that the write-test
+--      succeeds.
+--   b. capture the SDRAM read-data with a secon phase-shifted (but
+--      synchronous to 'clk') clock and resynchronize into the 'clk
+--      domain. Then ajust the capture clock phase until the read-
+--      test succeeds. You may want to scan the range of phases that
+--      passes the test and pick an optimal value.
+--
+--  NOTE: Keep in mind that the timing depends on all these factors:
+--      1. data/cmd/address arrives at the SDRAM with a delay (clk->Q
+--         of the output register + traces).
+--      2. SDRAM clock arrives at the device with a delay (phase of 'a'
+--         + clk->Q of any output register + trace).
+--      3. SDRAM setup/hold requirements must be met.
+--      4. capture clock phase must be such that setup-time of the
+--         capturing register is met keeping under consideration
+--         the SDRAM clock arrival time (2.) and the capture-clock
+--         phase ('b').
+--
 
 library ieee;
 use     ieee.std_logic_1164.all;

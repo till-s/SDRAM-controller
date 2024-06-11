@@ -5,7 +5,8 @@ use     ieee.numeric_std.all;
 entity RamEmul is
    generic (
       A_WIDTH_G : natural;
-      RDPIPEL_G : natural := 5
+      RDPIPEL_G : natural := 5;
+      REF_BRK_G : integer := 13
    );
    port (
       clk       : in  std_logic;
@@ -30,7 +31,12 @@ architecture rtl of RamEmul is
    signal ackd : signed(4 downto 0) := (others => '1');
    signal cnt  : natural := 0;
 
+   signal memset : std_logic := '0';
+   signal m0     : std_logic_vector(15 downto 0);
+
 begin
+
+   m0 <= mem(10);
 
    process ( clk ) is
    begin
@@ -45,16 +51,19 @@ begin
             if ( req = '1' ) then
                vpip(0) <= rdnwr;
                if ( rdnwr = '0' ) then
+                  memset <= '1';
                   mem( to_integer( unsigned( addr ) ) ) <= wdat;
                end if;
             end if;
          end if;
 
-         if ( cnt = 0 ) then
-            ackd <= to_signed( 5, ackd'length );
-            cnt  <= 13;
-         else
-            cnt  <= cnt - 1;
+         if ( REF_BRK_G > 0 ) then
+            if ( cnt = 0 ) then
+               ackd <= to_signed( 5, ackd'length );
+               cnt  <= REF_BRK_G;
+            else
+               cnt  <= cnt - 1;
+            end if;
          end if;
 
          for i in 1 to rpip'high loop
