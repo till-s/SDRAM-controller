@@ -8,36 +8,16 @@ use     ieee.std_logic_1164.all;
 use     ieee.numeric_std.all;
 use     ieee.math_real.all;
 
+use     work.SDRAMCtrlPkg.all;
+
 entity SDRAMCtrl is
    generic (
-      -- clock frequency
-      CLK_FREQ_G             : real    := 166.0E6;
-      -- refresh period
-      T_REF_G                : real    := 64.0E-3;
-      -- autorefresh cycle time
-      T_RFC_G                : real    := 60.0E-9;
-      -- precharge time
-      T_RP_G                 : real    := 15.0E-9;
-      -- active to precharge
-      T_RAS_MIN_G            : real    := 42.0E-9;
-      -- controller assumes that refresh period/row-count is smaller than T_RAS_MAX_G
-      T_RAS_MAX_G            : real    := 100.0E-6;
-      -- active to read/write
-      T_RCD_G                : real    := 15.0E-9;
-      -- initial pause
-      T_INIT_G               : real    := 200.0E-6;
-      -- number of initial auto-refresh cycles required
-      N_INIT_REFRESH_G       : natural := 8;
-      CAS_LAT_G              : natural := 3; -- cycles
-      -- write-recovery
-      WR_LAT_G               : natural := 2; -- cycles
-      DQ_BYTES_G             : natural := 2;
-      -- row-address width
-      A_WIDTH_G              : natural := 13;
-      -- bank-address width
-      B_WIDTH_G              : natural := 2;
-      -- column-address width
-      C_WIDTH_G              : natural := 8;
+      -- Actual clock frequency the device is operated at
+      -- It is important to provide the real clock frequency
+      -- the device is operated at in order to compute the
+      -- correct refresh period (and other delays).
+      CLK_FREQ_G             : real;
+      DEV_PARAMS_G           : SDRAMDevParamsType := SDRAM_DEV_PARAMS_DEFAULT_C;
       -- use external IO registers for output
       EXT_OUT_REG_G          : boolean := false;
       -- add a pipeline stage to the bus interface
@@ -55,26 +35,26 @@ entity SDRAMCtrl is
       req                    : in  std_logic;
       rdnwr                  : in  std_logic;
       ack                    : out std_logic;
-      addr                   : in  std_logic_vector(A_WIDTH_G + B_WIDTH_G + C_WIDTH_G - 1 downto 0);
-      wdat                   : in  std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
-      wstrb                  : in  std_logic_vector(  DQ_BYTES_G - 1 downto 0) := (others => '1');
+      addr                   : in  std_logic_vector(DEV_PARAMS_G.R_WIDTH + DEV_PARAMS_G.B_WIDTH + DEV_PARAMS_G.C_WIDTH - 1 downto 0);
+      wdat                   : in  std_logic_vector(8*DEV_PARAMS_G.DQ_BYTES - 1 downto 0);
+      wstrb                  : in  std_logic_vector(  DEV_PARAMS_G.DQ_BYTES - 1 downto 0) := (others => '1');
       -- pipelined read-back qualified by 'vld'
-      rdat                   : out std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
+      rdat                   : out std_logic_vector(8*DEV_PARAMS_G.DQ_BYTES - 1 downto 0);
       vld                    : out std_logic;
       -- initialization done
       rdy                    : out std_logic;
       -- SDRAM interface
-      sdramDQInp             : in  std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
-      sdramDQOut             : out std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
+      sdramDQInp             : in  std_logic_vector(8*DEV_PARAMS_G.DQ_BYTES - 1 downto 0);
+      sdramDQOut             : out std_logic_vector(8*DEV_PARAMS_G.DQ_BYTES - 1 downto 0);
       sdramDQOE              : out std_logic;
-      sdramAddr              : out std_logic_vector(A_WIDTH_G  - 1 downto 0);
-      sdramBank              : out std_logic_vector(B_WIDTH_G  - 1 downto 0);
+      sdramAddr              : out std_logic_vector(DEV_PARAMS_G.R_WIDTH  - 1 downto 0);
+      sdramBank              : out std_logic_vector(DEV_PARAMS_G.B_WIDTH  - 1 downto 0);
       sdramCSb               : out std_logic;
       sdramRASb              : out std_logic;
       sdramCASb              : out std_logic;
       sdramWEb               : out std_logic;
       sdramCKE               : out std_logic;
-      sdramDQM               : out std_logic_vector(DQ_BYTES_G - 1 downto 0)
+      sdramDQM               : out std_logic_vector(DEV_PARAMS_G.DQ_BYTES - 1 downto 0)
    );
 end entity SDRAMCtrl;
 
@@ -84,6 +64,13 @@ architecture rtl of SDRAMCtrl is
    -- RASb-CASb-WEb
    subtype CmdType is std_logic_vector(2 downto 0);
 
+   -- reduce amount of typing
+   constant P_C                  : SDRAMDevParamsType := DEV_PARAMS_G;
+   constant R_WIDTH_C            : natural := P_C.R_WIDTH;
+   constant B_WIDTH_C            : natural := P_C.B_WIDTH;
+   constant C_WIDTH_C            : natural := P_C.C_WIDTH;
+   constant DQ_BYTES_C           : natural := P_C.DQ_BYTES;
+
    constant CMD_NOP_C            : CmdType := "111";
    constant CMD_ACTIVATE_C       : CmdType := "011";
    constant CMD_WRITE_C          : CmdType := "100";
@@ -92,10 +79,10 @@ architecture rtl of SDRAMCtrl is
    constant CMD_SET_MODE_C       : CmdType := "000";
    constant     MODE_BURST_1_C   : std_logic_vector(2 downto 0) := "000";
    constant     MODE_ASEQ_C      : std_logic_vector(3 downto 3) := "0";
-   constant     MODE_CAS_LAT_C   : std_logic_vector(6 downto 4) := std_logic_vector( to_unsigned( CAS_LAT_G, 3 ) );
+   constant     MODE_CAS_LAT_C   : std_logic_vector(6 downto 4) := std_logic_vector( to_unsigned( P_C.CAS_LAT, 3 ) );
    constant     MODE_TST_NRM_C   : std_logic_vector(8 downto 7) := "00";
    constant     MODE_WBRST_C     : std_logic_vector(9 downto 9) := "0";
-   constant     MODE_RSRVD_C     : std_logic_vector(A_WIDTH_G - 1 downto 10) := (others => '0');
+   constant     MODE_RSRVD_C     : std_logic_vector(P_C.R_WIDTH - 1 downto 10) := (others => '0');
    constant     MODE_ADDR_C      : std_logic_vector(sdramAddr'range) := 
                                       MODE_RSRVD_C     &
                                       MODE_WBRST_C     &
@@ -155,40 +142,40 @@ architecture rtl of SDRAMCtrl is
    function row(constant a : std_logic_vector)
    return std_logic_vector is
    begin
-      return a(a'left downto a'left - A_WIDTH_G + 1);
+      return a(a'left downto a'left - R_WIDTH_C + 1);
    end function row;
 
    function bnk(constant a : std_logic_vector)
    return std_logic_vector is
    begin
-      return a(B_WIDTH_G + C_WIDTH_G - 1 downto C_WIDTH_G );
+      return a(B_WIDTH_C + C_WIDTH_C - 1 downto C_WIDTH_C );
    end function bnk;
 
    function col(constant a : std_logic_vector)
    return std_logic_vector is
    begin
-      return a(C_WIDTH_G - 1 downto 0);
+      return a(C_WIDTH_C - 1 downto 0);
    end function col;
 
 
-   constant C_RP_C               : integer := clicks( T_RP_G );
-   constant C_RFC_C              : integer := clicks( T_RFC_G );
-   constant C_RAS_C              : integer := clicks( T_RAS_MIN_G );
-   constant C_RCD_C              : integer := clicks( T_RCD_G );
+   constant C_RP_C               : integer := clicks( P_C.T_RP );
+   constant C_RFC_C              : integer := clicks( P_C.T_RFC );
+   constant C_RAS_C              : integer := clicks( P_C.T_RAS_MIN );
+   constant C_RCD_C              : integer := clicks( P_C.T_RCD );
    constant C_SET_MODE_C         : integer := 1;
 
-   constant T_REFRESH_C          : signed := timerInit( clicks( T_REF_G/(2.0**real(A_WIDTH_G)) ) - C_RFC_C - C_RP_C );
+   constant T_REFRESH_C          : signed := timerInit( clicks( P_C.T_REF/(2.0**real(R_WIDTH_C)) ) - C_RFC_C - C_RP_C );
    -- full period is timerValue( T_REFRESH_C ) + 1 cycles
-   constant T_INIT_C             : signed := timerInit( clicks( T_INIT_G / real( timerValue( T_REFRESH_C ) + 1 ) ) );
+   constant T_INIT_C             : signed := timerInit( clicks( P_C.T_INIT / real( timerValue( T_REFRESH_C ) + 1 ) ) );
 
    type SDRAMOutType is record
-      dq                         : std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
+      dq                         : std_logic_vector(8*DQ_BYTES_C - 1 downto 0);
       oe                         : std_logic;
-      addr                       : std_logic_vector(A_WIDTH_G  - 1 downto 0);
-      bank                       : std_logic_vector(B_WIDTH_G  - 1 downto 0);
+      addr                       : std_logic_vector(R_WIDTH_C  - 1 downto 0);
+      bank                       : std_logic_vector(B_WIDTH_C  - 1 downto 0);
       cmd                        : CmdType;
       cke                        : std_logic;
-      dqm                        : std_logic_vector(DQ_BYTES_G - 1 downto 0);
+      dqm                        : std_logic_vector(DQ_BYTES_C - 1 downto 0);
       csb                        : std_logic;
    end record SDRAMOutType;
 
@@ -204,9 +191,9 @@ architecture rtl of SDRAMCtrl is
    );
 
    -- read latency increased by 1 due to our pipeline (output register);
-   subtype RdLatType       is std_logic_vector(CAS_LAT_G - 1 downto 0);
+   subtype RdLatType       is std_logic_vector(P_C.CAS_LAT - 1 downto 0);
    -- time write -> precharge; since there is a 1 cycle delay in our pipeline we subtract one
-   subtype WrLatType       is std_logic_vector(WR_LAT_G  - 2 downto 0);
+   subtype WrLatType       is std_logic_vector(P_C.WR_LAT  - 2 downto 0);
 
 
    constant RDPIPE_EMPTY_C : RdLatType := (others => '0');
@@ -216,9 +203,9 @@ architecture rtl of SDRAMCtrl is
    type RegType is record
       state            : StateType;
       sdram            : SDRAMOutType;
-      row              : std_logic_vector(A_WIDTH_G  - 1 downto 0);
-      bnk              : std_logic_vector(B_WIDTH_G  - 1 downto 0);
-      lstBnk           : std_logic_vector(B_WIDTH_G  - 1 downto 0);
+      row              : std_logic_vector(R_WIDTH_C  - 1 downto 0);
+      bnk              : std_logic_vector(B_WIDTH_C  - 1 downto 0);
+      lstBnk           : std_logic_vector(B_WIDTH_C  - 1 downto 0);
       refTimer         : signed( T_REFRESH_C'range );
       iniTimer         : signed( T_INIT_C'range );
       timer            : signed( nbits(C_RAS_C) downto 0 );
@@ -246,9 +233,9 @@ architecture rtl of SDRAMCtrl is
    type ReqType is record
       req              : std_logic;
       rdnwr            : std_logic;
-      addr             : std_logic_vector(A_WIDTH_G + B_WIDTH_G + C_WIDTH_G - 1 downto 0);
-      wdat             : std_logic_vector(8*DQ_BYTES_G - 1 downto 0);
-      wstrb            : std_logic_vector(  DQ_BYTES_G - 1 downto 0);
+      addr             : std_logic_vector(R_WIDTH_C + B_WIDTH_C + C_WIDTH_C - 1 downto 0);
+      wdat             : std_logic_vector(8*DQ_BYTES_C - 1 downto 0);
+      wstrb            : std_logic_vector(  DQ_BYTES_C - 1 downto 0);
       sameBank         : boolean;
       sameRow          : boolean;
    end record ReqType;
@@ -274,7 +261,7 @@ architecture rtl of SDRAMCtrl is
 
 begin
 
-   assert T_RAS_MAX_G > T_REF_G / 2.0**real( A_WIDTH_G ) report "T_RAS_MAX < refresh period unsupported" severity failure;
+   assert P_C.T_RAS_MAX > P_C.T_REF / 2.0**real( R_WIDTH_C ) report "T_RAS_MAX < refresh period unsupported" severity failure;
 
    G_EXT_OUT_REG : if ( EXT_OUT_REG_G ) generate
       sdram            <= rin.sdram;
@@ -451,7 +438,7 @@ begin
                   -- use refresh timer to delay the first refresh until MODE required delay
                   timerInit( v.refTimer, C_SET_MODE_C );
                   -- use the iniTimer to count refresh cycles
-                  timerInit( v.iniTimer, N_INIT_REFRESH_G );
+                  timerInit( v.iniTimer, P_C.N_INIT_REFRESH );
                end if;
             end if;
 
@@ -525,7 +512,7 @@ begin
                   if ( locReq.sameRow ) then
                      -- *hit* we have the bank available
                      v.sdram.addr  := (others => '0');
-                     v.sdram.addr( C_WIDTH_G - 1 downto 0) := col( locReq.addr );
+                     v.sdram.addr( C_WIDTH_C - 1 downto 0) := col( locReq.addr );
                      v.sdram.dq    := locReq.wdat;
                      v.sdram.bank  := bnk( locReq.addr );
                      if ( locReq.rdnwr = '0' ) then

@@ -86,7 +86,7 @@ signals:
    is accepted.
 
    `vld` is asserted by the controller when read data is
-   valid (`CAS_LAT_G` plus additional cycles introduced
+   valid (`CAS_LAT` plus additional cycles introduced
    by pipeline and buffer registers -- see 'Additional
    Pipeline Stages' -- after the corresponding
    `ack`).

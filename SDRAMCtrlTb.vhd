@@ -114,7 +114,7 @@ begin
 
    U_DUT : entity work.SDRAMCtrl
       generic map (
-         A_WIDTH_G  => 13,
+         CLK_FREQ_G => 100.0E6,
          INP_REG_G  => 2
       )
       port map (
