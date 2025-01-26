@@ -39,22 +39,40 @@ package SDRAMCtrlPkg is
       C_WIDTH                : natural;
    end record SDRAMDevParamsType;
 
-   constant SDRAM_DEV_PARAMS_DEFAULT_C : SDRAMDevParamsType := (
-      CLK_FREQ_MAX            => 166.0E6,
-      T_REF                   => 64.0E-3,
-      T_RFC                   => 60.0E-9,
-      T_RP                    => 15.0E-9,
-      T_RAS_MIN               => 42.0E-9,
-      T_RAS_MAX               => 100.0E-6,
-      T_RCD                   => 15.0E-9,
-      T_INIT                  => 200.0E-6,
+   -- All (absolute) times/frequencies are in seconds/Hz:
+   constant INSIGNIS_NDS36PT5_16ET_C : SDRAMDevParamsType := (
+   -- Max. clock frequency
+      CLK_FREQ_MAX            => 166.0E6,   -- Hz
+   -- refresh period
+      T_REF                   => 64.0E-3,   -- seconds
+   -- autorefresh cycle time
+      T_RFC                   => 60.0E-9,   -- seconds
+   -- precharge time
+      T_RP                    => 15.0E-9,   -- seconds
+   -- active to precharge
+      T_RAS_MIN               => 42.0E-9,   -- seconds
+   -- controller assumes that refresh period/row-count is smaller than SDRAM_T_RAS_MAX_C
+      T_RAS_MAX               => 100.0E-6,  -- seconds
+   -- active to read/write
+      T_RCD                   => 15.0E-9,   -- seconds
+   -- initial delay
+      T_INIT                  => 200.0E-6,  -- seconds
+   -- number of initial auto-refresh cycles required
       N_INIT_REFRESH          => 8,
-      CAS_LAT                 => 3,
-      WR_LAT                  => 2,
-      DQ_BYTES                => 2,
-      R_WIDTH                 => 13,
-      B_WIDTH                 => 2,
-      C_WIDTH                 => 8
+   -- CAS latency
+      CAS_LAT                 => 3,         -- clock cycles
+   -- write-recovery
+      WR_LAT                  => 2,         -- clock cycles
+   -- data bus width
+      DQ_BYTES                => 2,         -- bytes; *ONLY* 16-bits supported!
+   -- log2 of number of rows
+      R_WIDTH                 => 13,        -- bits
+   -- log2 of number of banks
+      B_WIDTH                 => 2,         -- bits
+   -- log2 of number of columns
+      C_WIDTH                 => 8          -- bits
    );
+
+   constant SDRAM_DEV_PARAMS_DEFAULT_C : SDRAMDevParamsType := INSIGNIS_NDS36PT5_16ET_C;
 
 end package SDRAMCtrlPkg;
