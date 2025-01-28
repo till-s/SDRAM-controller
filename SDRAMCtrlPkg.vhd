@@ -64,7 +64,7 @@ package SDRAMCtrlPkg is
    -- write-recovery
       WR_LAT                  => 2,         -- clock cycles
    -- data bus width
-      DQ_BYTES                => 2,         -- bytes; *ONLY* 16-bits supported!
+      DQ_BYTES                => 2,         -- bytes
    -- log2 of number of rows
       R_WIDTH                 => 13,        -- bits
    -- log2 of number of banks
