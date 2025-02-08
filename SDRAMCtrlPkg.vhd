@@ -70,7 +70,7 @@ package SDRAMCtrlPkg is
    -- log2 of number of banks
       B_WIDTH                 => 2,         -- bits
    -- log2 of number of columns
-      C_WIDTH                 => 8          -- bits
+      C_WIDTH                 => 9          -- bits
    );
 
    constant SDRAM_DEV_PARAMS_DEFAULT_C : SDRAMDevParamsType := INSIGNIS_NDS36PT5_16ET_C;
